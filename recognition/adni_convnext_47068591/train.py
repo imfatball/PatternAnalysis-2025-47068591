@@ -244,6 +244,8 @@ def main():
     if args.subject_eval:
         history["val_subj_acc"] = []
 
+    patience = 8
+    bad = 0
     best_metric = -1.0
     best_path = outdir / "best_model.pt"
 
@@ -269,9 +271,15 @@ def main():
         print(f"LR={curr_lr:.6g}")
 
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
+        monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
         if monitor > best_metric:
-            best_metric = monitor
+            best_metric, bad = monitor, 0
             save_checkpoint(model, best_path)
+        else:
+            bad += 1
+            if bad >= patience:
+                print(f"Early stopping (no improvement for {patience} epochs).")
+                break
 
     # Save logs
     plot_history(history, outdir)
