@@ -5,19 +5,19 @@ Loads grayscale JPEG slices for AD vs NC classification (ADNI dataset).
 
 Expected directory structure:
     ADNI/
-      AD_NC/
-        train/
-          AD/
-            123456_78.jpeg
-            123456_79.jpeg
-            ...
-          NC/
-            654321_81.jpeg
-            654321_82.jpeg
-            ...
-        test/
-          AD/
-          NC/
+        AD_NC/
+            train/
+                AD/
+                    123456_78.jpeg
+                    123456_79.jpeg
+                    ...
+                NC/
+                    654321_81.jpeg
+                    654321_82.jpeg
+                    ...
+            test/
+                AD/
+                NC/
 """
 
 import os
