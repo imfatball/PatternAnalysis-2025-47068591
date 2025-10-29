@@ -174,7 +174,7 @@ class ConvNeXtTiny1C(nn.Module):
         self.dropout = nn.Dropout(head_drop)
         self.fc = nn.Linear(dims[3], num_classes)
 
-        # Weight init (Kaiming for convs, xavier for linears)
+        # Weight init 
         self.apply(self._init_weights)
 
     def _init_weights(self, m: nn.Module):

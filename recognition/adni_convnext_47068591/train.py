@@ -37,8 +37,8 @@ CONFIG = dict(
     LIMIT_SLICES_PER_SUBJECT=20, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.1,
-    HEAD_DROP=0.2,
+    DROP_PATH_RATE=0.2,
+    HEAD_DROP=0.3,
     WARMUP_EPOCHS=5,
 )
 # ============================================================================ #
@@ -203,6 +203,8 @@ def main():
     model = ConvNeXtTiny1C(
         in_ch=1, num_classes=1,
         drop_path_rate=CONFIG["DROP_PATH_RATE"],
+        depths=(2, 2, 6, 2),
+        dims=(64, 128, 256, 512), 
         head_drop=CONFIG["HEAD_DROP"]
     ).to(device)
     warmup_epochs = CONFIG["WARMUP_EPOCHS"]
