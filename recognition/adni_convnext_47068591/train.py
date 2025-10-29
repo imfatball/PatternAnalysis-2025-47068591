@@ -34,11 +34,11 @@ CONFIG = dict(
     OUT="runs",
     WORKERS=4,
     IMAGE_SIZE=224,
-    LIMIT_SLICES_PER_SUBJECT=20, 
+    LIMIT_SLICES_PER_SUBJECT=12, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.2,
-    HEAD_DROP=0.3,
+    DROP_PATH_RATE=0.3,
+    HEAD_DROP=0.5,
     WARMUP_EPOCHS=5,
 )
 # ============================================================================ #
@@ -53,7 +53,7 @@ def set_seed(seed: int = 42):
 def save_checkpoint(model: nn.Module, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), path)
-    print(f"✅ Saved checkpoint: {path}")
+    print(f"Saved checkpoint: {path}")
 
 def plot_history(history: dict, outdir: Path):
     outdir.mkdir(parents=True, exist_ok=True)
@@ -262,7 +262,7 @@ def main():
     with open(outdir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    print(f"🏁 Done. Best metric ({'subject' if args.subject_eval else 'slice'}): {best_metric:.3f}")
+    print(f"Done. Best metric ({'subject' if args.subject_eval else 'slice'}): {best_metric:.3f}")
     print(f"Best checkpoint: {best_path}")
 
 
