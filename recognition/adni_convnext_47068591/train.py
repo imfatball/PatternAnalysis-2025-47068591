@@ -1,34 +1,48 @@
 """
-train.py
----------
-Train a self-built ConvNeXtTiny1C on ADNI JPEG slices (AD vs NC).
-
-Example (local):
-    python train.py --root "D:/ADNI/AD_NC" --epochs 10 --batch 16 --image_size 224
-
-Example (Rangpur):
-    python train.py --root /home/groups/comp3710/ADNI/AD_NC --epochs 30 --batch 64 --workers 8 --subject_eval
+train.py (no-CLI needed)
+------------------------
+Set CONFIG below (especially ROOT) and run:
+    python train.py
+You can still override with flags (e.g., --root PATH), but it's optional.
 """
 
 import os
 import json
 import time
-import argparse
 from pathlib import Path
 from collections import defaultdict
+from contextlib import nullcontext
 
+import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import matplotlib.pyplot as plt
 
 from dataset import ADNIJPEGSlicesDataset
 from modules import ConvNeXtTiny1C, bce_with_logits_loss, binary_metrics
 
+# ====================== USER CONFIG ============================= #
+CONFIG = dict(
+    ROOT=r"C:\Users\harri\UQ\COMP3710\COMP3710_A3\PatternAnalysis-2025-47068591\data\ADNI\AD_NC",
+    EPOCHS=60,
+    BATCH=16,
+    LR=2e-4,
+    WEIGHT_DECAY=5e-2,
+    OUT="runs",
+    WORKERS=4,
+    IMAGE_SIZE=224,
+    LIMIT_SLICES_PER_SUBJECT=20, 
+    SUBJECT_EVAL=True,
+    SEED=42,
+    DROP_PATH_RATE=0.1,
+    HEAD_DROP=0.2,
+    WARMUP_EPOCHS=5,
+)
+# ============================================================================ #
 
-# ------------------------------ Utilities ------------------------------------ #
 
 def set_seed(seed: int = 42):
     import random, numpy as np
@@ -59,30 +73,30 @@ def plot_history(history: dict, outdir: Path):
     if "val_subj_acc" in history and len(history["val_subj_acc"]) > 0:
         plt.figure()
         plt.plot(history["val_subj_acc"], label="Val Subject Acc")
-        plt.xlabel("Epoch"); plt.ylabel("Subject Accuracy"); plt.legend()
+        plt.xlabel("Epoch"); plt.ylabel("Subject Acc"); plt.legend()
         plt.tight_layout(); plt.savefig(outdir / "subject_acc_curve.png", dpi=150); plt.close()
 
-
-# --------------------------- Train / Eval Loops ------------------------------- #
 
 def train_one_epoch(model, loader, optimizer, device, scaler=None):
     model.train()
     running_loss, running_acc, n_samples = 0.0, 0.0, 0
+    autocast_ctx = torch.amp.autocast('cuda') if device == "cuda" else nullcontext()
 
-    for imgs, labels, _sids in loader:  # sids not needed for training
+    for imgs, labels, _sids in loader:
         imgs, labels = imgs.to(device), labels.to(device)
-
         optimizer.zero_grad(set_to_none=True)
+
         if scaler is not None:
-            with torch.cuda.amp.autocast():
+            with autocast_ctx:
                 logits = model(imgs)
                 loss = bce_with_logits_loss(logits, labels)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            logits = model(imgs)
-            loss = bce_with_logits_loss(logits, labels)
+            with autocast_ctx:
+                logits = model(imgs)
+                loss = bce_with_logits_loss(logits, labels)
             loss.backward()
             optimizer.step()
 
@@ -99,11 +113,13 @@ def train_one_epoch(model, loader, optimizer, device, scaler=None):
 def evaluate_slice_level(model, loader, device):
     model.eval()
     total_loss, total_acc, n_samples = 0.0, 0.0, 0
+    autocast_ctx = torch.amp.autocast('cuda') if device == "cuda" else nullcontext()
 
     for imgs, labels, _sids in loader:
         imgs, labels = imgs.to(device), labels.to(device)
-        logits = model(imgs)
-        loss = bce_with_logits_loss(logits, labels)
+        with autocast_ctx:
+            logits = model(imgs)
+            loss = bce_with_logits_loss(logits, labels)
         acc, _ = binary_metrics(logits, labels)
 
         bs = imgs.size(0)
@@ -116,16 +132,14 @@ def evaluate_slice_level(model, loader, device):
 
 @torch.no_grad()
 def evaluate_subject_level(model, loader, device):
-    """
-    Aggregates predictions per subject by averaging slice probabilities.
-    Returns subject-level accuracy.
-    """
     model.eval()
-    bucket = defaultdict(list)  # sid -> list of (prob, label)
+    bucket = defaultdict(list)
+    autocast_ctx = torch.amp.autocast('cuda') if device == "cuda" else nullcontext()
 
     for imgs, labels, sids in loader:
         imgs, labels = imgs.to(device), labels.to(device)
-        logits = model(imgs)
+        with autocast_ctx:
+            logits = model(imgs)
         probs = torch.sigmoid(logits).cpu().numpy()
         labs  = labels.cpu().numpy()
         for p, l, sid in zip(probs, labs, sids):
@@ -135,106 +149,113 @@ def evaluate_subject_level(model, loader, device):
     for sid, entries in bucket.items():
         mean_prob = sum(p for p, _ in entries) / len(entries)
         pred = 1 if mean_prob >= 0.5 else 0
-        true = entries[0][1]  # all slices of same subject share label
+        true = entries[0][1]
         correct += int(pred == true)
         total   += 1
 
     return correct / max(total, 1)
 
 
-# ---------------------------------- Main ------------------------------------- #
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=str, required=True, help="Path to ADNI/AD_NC directory")
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--out", type=str, default="runs")
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--image_size", type=int, default=224)
-    parser.add_argument("--limit_slices_per_subject", type=int, default=None)
-    parser.add_argument("--subject_eval", action="store_true", help="Also compute subject-level accuracy on val/test")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
+    # Optional CLI overrides (but all have defaults from CONFIG)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--root", type=str, default=CONFIG["ROOT"])
+    parser.add_argument("--epochs", type=int, default=CONFIG["EPOCHS"])
+    parser.add_argument("--batch", type=int, default=CONFIG["BATCH"])
+    parser.add_argument("--lr", type=float, default=CONFIG["LR"])
+    parser.add_argument("--weight_decay", type=float, default=CONFIG["WEIGHT_DECAY"])
+    parser.add_argument("--out", type=str, default=CONFIG["OUT"])
+    parser.add_argument("--workers", type=int, default=CONFIG["WORKERS"])
+    parser.add_argument("--image_size", type=int, default=CONFIG["IMAGE_SIZE"])
+    parser.add_argument("--limit_slices_per_subject", type=int, default=CONFIG["LIMIT_SLICES_PER_SUBJECT"])
+    parser.add_argument("--subject_eval", action="store_true" if CONFIG["SUBJECT_EVAL"] else "store_false")
+    parser.add_argument("--seed", type=int, default=CONFIG["SEED"])
+    args, _ = parser.parse_known_args()
 
+    # If CONFIG["SUBJECT_EVAL"] is True but flag not passed, enforce it
+    args.subject_eval = CONFIG["SUBJECT_EVAL"] or args.subject_eval
+
+    # Seed / device
     set_seed(args.seed)
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    outdir = Path(args.out)
-    outdir.mkdir(parents=True, exist_ok=True)
 
+    outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
     print(f"Device: {device}")
     print(f"Root:   {args.root}")
 
-    # Datasets: use 'train' for training and 'test' for validation (as per your layout)
+    # Datasets
     train_ds = ADNIJPEGSlicesDataset(
-        root=args.root,
-        split="train",
-        image_size=args.image_size,
-        augment=True,
+        root=args.root, split="train",
+        image_size=args.image_size, augment=True,
         limit_slices_per_subject=args.limit_slices_per_subject
     )
     val_ds = ADNIJPEGSlicesDataset(
-        root=args.root,
-        split="test",
-        image_size=args.image_size,
-        augment=False
+        root=args.root, split="test",
+        image_size=args.image_size, augment=False
     )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                               num_workers=args.workers, pin_memory=True)
-    val_loader   = DataLoader(val_ds,   batch_size=args.batch, shuffle=False,
+    val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                               num_workers=args.workers, pin_memory=True)
 
-    # Model / Optimizer / Scheduler
-    model = ConvNeXtTiny1C(in_ch=1, num_classes=1, drop_path_rate=0.1).to(device)
+    # Model / Optim / Sched
+    model = ConvNeXtTiny1C(
+        in_ch=1, num_classes=1,
+        drop_path_rate=CONFIG["DROP_PATH_RATE"],
+        head_drop=CONFIG["HEAD_DROP"]
+    ).to(device)
+    warmup_epochs = CONFIG["WARMUP_EPOCHS"]
+    
+
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        # after warmup, delegate to cosine by keeping lambda=1 and stepping base_scheduler
+        return 1.0
+
+    
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+    warmup = LambdaLR(optimizer, lr_lambda=lr_lambda)
+    base_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - warmup_epochs)
+    schedulers = (warmup, base_scheduler)
+    scaler = torch.amp.GradScaler('cuda') if device == "cuda" else None
 
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
     if args.subject_eval:
         history["val_subj_acc"] = []
 
-    best_metric = -1.0  # track best (subject-level if enabled, else slice-level)
+    best_metric = -1.0
     best_path = outdir / "best_model.pt"
 
-    # ------------------------------ Training Loop ---------------------------- #
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device, scaler)
         val_loss, val_acc = evaluate_slice_level(model, val_loader, device)
-        scheduler.step()
+        if epoch <= warmup_epochs:
+            schedulers[0].step()
+        else:
+            schedulers[1].step()
 
-        history["train_loss"].append(tr_loss)
-        history["val_loss"].append(val_loss)
-        history["train_acc"].append(tr_acc)
-        history["val_acc"].append(val_acc)
+        history["train_loss"].append(tr_loss); history["val_loss"].append(val_loss)
+        history["train_acc"].append(tr_acc);   history["val_acc"].append(val_acc)
 
-        line = f"Epoch {epoch:03d}/{args.epochs} | " \
-               f"Train {tr_loss:.4f}/{tr_acc:.3f} | " \
-               f"Val {val_loss:.4f}/{val_acc:.3f}"
-
-        # Optional subject-level validation
+        line = f"Epoch {epoch:03d}/{args.epochs} | Train {tr_loss:.4f}/{tr_acc:.3f} | Val {val_loss:.4f}/{val_acc:.3f}"
         subj_metric = None
         if args.subject_eval:
             subj_metric = evaluate_subject_level(model, val_loader, device)
             history["val_subj_acc"].append(subj_metric)
             line += f" | Val-Subject {subj_metric:.3f}"
-
-        line += f" | {time.time() - t0:.1f}s"
+        line += f" | {time.time()-t0:.1f}s"
         print(line)
 
-        # Choose which metric to monitor for "best"
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
         if monitor > best_metric:
             best_metric = monitor
             save_checkpoint(model, best_path)
 
-    # Save logs & plots
+    # Save logs
     plot_history(history, outdir)
     with open(outdir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
