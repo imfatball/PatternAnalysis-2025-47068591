@@ -97,9 +97,10 @@ class ADNIJPEGSlicesDataset(Dataset):
         ]
         if split == "train" and augment:
             aug_tf = [
-                T.RandomHorizontalFlip(p=0.5),
-                T.RandomRotation(10),
-                T.RandomResizedCrop(image_size, scale=(0.9, 1.0))
+                T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.2),
+                T.RandomRotation(degrees=12),
+                T.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
+                T.RandomResizedCrop(image_size, scale=(0.9, 1.0), ratio=(0.95, 1.05)),
             ]
             self.tf = T.Compose(aug_tf + base_tf)
         else:
