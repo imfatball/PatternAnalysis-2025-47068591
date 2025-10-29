@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from collections import defaultdict
 from contextlib import nullcontext
+from utils import RandomSubjectSampler
 
 import argparse
 import torch
@@ -20,6 +21,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 from dataset import ADNIJPEGSlicesDataset
 from modules import ConvNeXtTiny1C, bce_with_logits_loss, binary_metrics
@@ -29,7 +31,7 @@ CONFIG = dict(
     ROOT=r"C:\Users\harri\UQ\COMP3710\COMP3710_A3\PatternAnalysis-2025-47068591\data\ADNI\AD_NC",
     EPOCHS=60,
     BATCH=16,
-    LR=2e-4,
+    LR=5e-4,
     WEIGHT_DECAY=5e-2,
     OUT="runs",
     WORKERS=4,
@@ -37,9 +39,9 @@ CONFIG = dict(
     LIMIT_SLICES_PER_SUBJECT=12, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.3,
-    HEAD_DROP=0.5,
-    WARMUP_EPOCHS=5,
+    DROP_PATH_RATE=0.2,
+    HEAD_DROP=0.3,
+    WARMUP_EPOCHS=0,
 )
 # ============================================================================ #
 
@@ -85,19 +87,28 @@ def train_one_epoch(model, loader, optimizer, device, scaler=None):
     for imgs, labels, _sids in loader:
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad(set_to_none=True)
+        eps = 0.05
+        targets = labels.float() * (1.0 - eps) + 0.5 * eps
 
         if scaler is not None:
             with autocast_ctx:
                 logits = model(imgs)
-                loss = bce_with_logits_loss(logits, labels)
+                loss = F.binary_cross_entropy_with_logits(
+                    logits.view(-1), targets.view(-1)
+                )
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             with autocast_ctx:
                 logits = model(imgs)
-                loss = bce_with_logits_loss(logits, labels)
+                loss = F.binary_cross_entropy_with_logits(
+                    logits.view(-1), targets.view(-1)
+                )
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
         acc, _ = binary_metrics(logits.detach(), labels)
@@ -117,9 +128,13 @@ def evaluate_slice_level(model, loader, device):
 
     for imgs, labels, _sids in loader:
         imgs, labels = imgs.to(device), labels.to(device)
+        eps = 0.05
+        targets = labels.float() * (1.0 - eps) + 0.5 * eps
         with autocast_ctx:
             logits = model(imgs)
-            loss = bce_with_logits_loss(logits, labels)
+            loss = F.binary_cross_entropy_with_logits(
+                logits.view(-1), targets.view(-1)
+            )
         acc, _ = binary_metrics(logits, labels)
 
         bs = imgs.size(0)
@@ -194,8 +209,13 @@ def main():
         image_size=args.image_size, augment=False
     )
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                              num_workers=args.workers, pin_memory=True)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch,
+        shuffle=RandomSubjectSampler(train_ds, batch_size=args.batch, drop_last=True, seed=args.seed),
+        num_workers=args.workers,
+        pin_memory=True,
+    )
     val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                               num_workers=args.workers, pin_memory=True)
 
@@ -209,7 +229,6 @@ def main():
     ).to(device)
     warmup_epochs = CONFIG["WARMUP_EPOCHS"]
     
-
     def lr_lambda(epoch):
         if epoch < warmup_epochs:
             return (epoch + 1) / warmup_epochs
@@ -218,9 +237,7 @@ def main():
 
     
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    warmup = LambdaLR(optimizer, lr_lambda=lr_lambda)
-    base_scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs - warmup_epochs)
-    schedulers = (warmup, base_scheduler)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs) 
     scaler = torch.amp.GradScaler('cuda') if device == "cuda" else None
 
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
@@ -235,10 +252,7 @@ def main():
 
         tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device, scaler)
         val_loss, val_acc = evaluate_slice_level(model, val_loader, device)
-        if epoch <= warmup_epochs:
-            schedulers[0].step()
-        else:
-            schedulers[1].step()
+        scheduler.step()
 
         history["train_loss"].append(tr_loss); history["val_loss"].append(val_loss)
         history["train_acc"].append(tr_acc);   history["val_acc"].append(val_acc)
@@ -251,6 +265,8 @@ def main():
             line += f" | Val-Subject {subj_metric:.3f}"
         line += f" | {time.time()-t0:.1f}s"
         print(line)
+        curr_lr = optimizer.param_groups[0]['lr']
+        print(f"LR={curr_lr:.6g}")
 
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
         if monitor > best_metric:
