@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from collections import defaultdict
 from contextlib import nullcontext
-from utils import RandomSubjectSampler
+from utils import BalancedClassSubjectSampler
 
 import argparse
 import torch
@@ -22,6 +22,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
+import numpy as np
 
 from dataset import ADNIJPEGSlicesDataset
 from modules import ConvNeXtTiny1C, bce_with_logits_loss, binary_metrics
@@ -170,6 +171,34 @@ def evaluate_subject_level(model, loader, device):
 
     return correct / max(total, 1)
 
+@torch.no_grad()
+def gather_subject_probs(model, loader, device):
+    model.eval()
+    from collections import defaultdict
+    from contextlib import nullcontext
+    bucket = defaultdict(list)
+    ctx = torch.amp.autocast('cuda') if device == 'cuda' else nullcontext()
+    for imgs, labels, sids in loader:
+        imgs = imgs.to(device)
+        with ctx:
+            logits = model(imgs)
+        probs = torch.sigmoid(logits.view(-1)).cpu().numpy()
+        labs  = labels.numpy()
+        for p, l, sid in zip(probs, labs, sids):
+            bucket[sid].append((float(p), int(l)))
+    out = [(np.mean([p for p,_ in v]), v[0][1]) for v in bucket.values()]
+    return np.array(out, dtype=float)  # shape [N_subjects, 2]
+
+def best_threshold_on_val(model, loader, device, lo=0.30, hi=0.70, steps=41):
+    pl = gather_subject_probs(model, loader, device)
+    probs, labels = pl[:,0], pl[:,1].astype(int)
+    best_t, best_acc = 0.5, 0.0
+    for t in np.linspace(lo, hi, steps):
+        acc = ((probs >= t).astype(int) == labels).mean()
+        if acc > best_acc:
+            best_t, best_acc = t, acc
+    return best_t, best_acc
+
 
 def main():
     # Optional CLI overrides (but all have defaults from CONFIG)
@@ -212,7 +241,7 @@ def main():
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch,
-        shuffle=RandomSubjectSampler(train_ds, batch_size=args.batch, drop_last=True, seed=args.seed),
+        sampler=BalancedClassSubjectSampler(train_ds, batch_size=args.batch, drop_last=True, seed=args.seed),
         num_workers=args.workers,
         pin_memory=True,
     )
@@ -259,16 +288,14 @@ def main():
         history["train_loss"].append(tr_loss); history["val_loss"].append(val_loss)
         history["train_acc"].append(tr_acc);   history["val_acc"].append(val_acc)
 
-        line = f"Epoch {epoch:03d}/{args.epochs} | Train {tr_loss:.4f}/{tr_acc:.3f} | Val {val_loss:.4f}/{val_acc:.3f}"
+        line = f"Epoch {epoch:03d}/{args.epochs} | Train: loss{tr_loss:.4f}/acc {tr_acc:.3f} | Val: loss{val_loss:.4f}/acc{val_acc:.3f}"
         subj_metric = None
         if args.subject_eval:
             subj_metric = evaluate_subject_level(model, val_loader, device)
             history["val_subj_acc"].append(subj_metric)
-            line += f" | Val-Subject {subj_metric:.3f}"
+            line += f" | Val-Subject acc{subj_metric:.3f}"
         line += f" | {time.time()-t0:.1f}s"
         print(line)
-        curr_lr = optimizer.param_groups[0]['lr']
-        print(f"LR={curr_lr:.6g}")
 
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
@@ -285,6 +312,11 @@ def main():
     plot_history(history, outdir)
     with open(outdir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
+    
+    # determine best threshold t* on val set
+    model.load_state_dict(torch.load(best_path, map_location=device))
+    t_star, val_star = best_threshold_on_val(model, val_loader, device)
+    print(f"Best validation subject threshold t*={t_star:.3f}, acc={val_star:.3f}")
 
     print(f"Done. Best metric ({'subject' if args.subject_eval else 'slice'}): {best_metric:.3f}")
     print(f"Best checkpoint: {best_path}")
