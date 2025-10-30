@@ -1,9 +1,9 @@
 """
-train.py (no-CLI needed)
+train.py
 ------------------------
 Set CONFIG below (especially ROOT) and run:
     python train.py
-You can still override with flags (e.g., --root PATH), but it's optional.
+Can still override with flags (e.g., --root PATH)
 """
 
 import os
@@ -32,8 +32,8 @@ CONFIG = dict(
     ROOT=r"C:\Users\harri\UQ\COMP3710\COMP3710_A3\PatternAnalysis-2025-47068591\data\ADNI\AD_NC",
     EPOCHS=60,
     BATCH=16,
-    LR=5e-4,
-    WEIGHT_DECAY=5e-2,
+    LR=1e-4,
+    WEIGHT_DECAY=5e-3,
     OUT="runs",
     WORKERS=4,
     IMAGE_SIZE=224,
