@@ -99,7 +99,7 @@ class ADNIJPEGSlicesDataset(Dataset):
             tensor_steps = [
                 T.ToTensor(),                     # -> tensor [1,H,W]
                 T.Normalize(mean=[0.5], std=[0.5]),
-                T.RandomErasing(p=0.25, scale=(0.01, 0.03), ratio=(0.3, 3.3), value='random'),
+                T.RandomErasing(p=0.15, scale=(0.01, 0.03), ratio=(0.3, 3.3), value='random'),
             ]
             self.tf = T.Compose([T.Resize((image_size, image_size))] + pil_augs + tensor_steps)
         else:
