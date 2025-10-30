@@ -70,6 +70,7 @@ class ADNIJPEGSlicesDataset(Dataset):
 
         split_dir = os.path.join(root, split)
         self.samples: List[Tuple[str, int, str]] = []  # (path, label, subject_id)
+        pad_to_square = T.Pad(padding=(8, 0, 8, 0), padding_mode="reflect")
 
         # Collect all JPEGs
         for cls in ("AD", "NC"):
@@ -91,20 +92,27 @@ class ADNIJPEGSlicesDataset(Dataset):
 
         if split == "train" and augment:
             pil_augs = [
+                pad_to_square,
                 T.RandomHorizontalFlip(p=0.5),
-                T.RandomRotation(10),
-                T.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-                T.RandomResizedCrop(image_size, scale=(0.9, 1.0)),
+                T.RandomRotation(5),                              
+                T.RandomAffine(degrees=0, translate=(0.03, 0.03), 
+                            scale=(0.97, 1.03)),
+                T.ColorJitter(brightness=0.05, contrast=0.05),
+                T.RandomCrop((image_size, image_size)),
             ]
             tensor_steps = [
-                T.ToTensor(),                     # -> tensor [1,H,W]
+                T.ToTensor(),                     # -> [1,H,W]
                 T.Normalize(mean=[0.5], std=[0.5]),
-                T.RandomErasing(p=0.15, scale=(0.01, 0.03), ratio=(0.3, 3.3), value='random'),
+                T.RandomErasing(p=0.2,            # keep modest; can raise to 0.3 later
+                                scale=(0.01, 0.03),
+                                ratio=(0.3, 3.3),
+                                value='random'),
             ]
-            self.tf = T.Compose([T.Resize((image_size, image_size))] + pil_augs + tensor_steps)
+            self.tf = T.Compose(pil_augs + tensor_steps)
         else:
             self.tf = T.Compose([
-                T.Resize((image_size, image_size)),
+                pad_to_square,
+                T.CenterCrop((image_size, image_size)),
                 T.ToTensor(),
                 T.Normalize(mean=[0.5], std=[0.5]),
             ])

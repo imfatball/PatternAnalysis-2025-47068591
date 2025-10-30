@@ -30,9 +30,9 @@ from modules import ConvNeXtTiny1C, bce_with_logits_loss, binary_metrics
 # ====================== USER CONFIG ============================= #
 CONFIG = dict(
     ROOT=r"C:\Users\harri\UQ\COMP3710\COMP3710_A3\PatternAnalysis-2025-47068591\data\ADNI\AD_NC",
-    EPOCHS=60,
-    BATCH=16,
-    LR=1e-4,
+    EPOCHS=80,
+    BATCH=32,
+    LR=3e-4,
     WEIGHT_DECAY=5e-3,
     OUT="runs",
     WORKERS=4,
@@ -252,8 +252,8 @@ def main():
     model = ConvNeXtTiny1C(
         in_ch=1, num_classes=1,
         drop_path_rate=CONFIG["DROP_PATH_RATE"],
-        depths=(2, 2, 6, 2),
-        dims=(64, 128, 256, 512), 
+        depths=(2, 2, 9, 2),
+        dims=(80, 160, 320, 640), 
         head_drop=CONFIG["HEAD_DROP"]
     ).to(device)
     warmup_epochs = CONFIG["WARMUP_EPOCHS"]
