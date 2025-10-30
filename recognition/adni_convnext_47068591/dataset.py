@@ -89,24 +89,25 @@ class ADNIJPEGSlicesDataset(Dataset):
                 for p in plist:
                     self.samples.append((p, label, sid))
 
-        # Define transforms
-        base_tf = [
-            T.Resize((image_size, image_size)),
-            T.ToTensor(),                     # → [1, H, W]
-            T.Normalize(mean=[0.5], std=[0.5])
-        ]
         if split == "train" and augment:
-            aug_tf = [
-                T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.2),
-                T.RandomRotation(degrees=10),
+            pil_augs = [
+                T.RandomHorizontalFlip(p=0.5),
+                T.RandomRotation(10),
                 T.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-                T.RandomResizedCrop(image_size, scale=(0.9, 1.0), ratio=(0.95, 1.05)),
-                T.RandomErasing(p=0.25, scale=(0.01, 0.03), ratio=(0.3, 3.3), value='random'),
-
+                T.RandomResizedCrop(image_size, scale=(0.9, 1.0)),
             ]
-            self.tf = T.Compose(aug_tf + base_tf)
+            tensor_steps = [
+                T.ToTensor(),                     # -> tensor [1,H,W]
+                T.Normalize(mean=[0.5], std=[0.5]),
+                T.RandomErasing(p=0.25, scale=(0.01, 0.03), ratio=(0.3, 3.3), value='random'),
+            ]
+            self.tf = T.Compose([T.Resize((image_size, image_size))] + pil_augs + tensor_steps)
         else:
-            self.tf = T.Compose(base_tf)
+            self.tf = T.Compose([
+                T.Resize((image_size, image_size)),
+                T.ToTensor(),
+                T.Normalize(mean=[0.5], std=[0.5]),
+            ])
 
     def __len__(self):
         return len(self.samples)
