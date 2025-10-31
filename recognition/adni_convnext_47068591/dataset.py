@@ -39,6 +39,30 @@ def _parse_subject_id(filename: str) -> str:
     stem, _ = os.path.splitext(base)
     return stem.split("_")[0]
 
+def build_transforms(image_size=224, train=True):
+    pad_to_square = T.Pad((8, 0, 8, 0), padding_mode="reflect")  # 256x240 -> 256x256
+    if train:
+        pil_augs = [
+            pad_to_square,
+            T.RandomHorizontalFlip(0.5),
+            T.RandomRotation(3),
+            T.RandomAffine(degrees=0, translate=(0.02,0.02), scale=(0.98,1.02)),
+            T.RandomCrop((image_size, image_size)),
+        ]
+        tens_augs = [
+            T.ToTensor(),
+            T.Normalize([0.5],[0.5]),
+            T.RandomErasing(p=0.15, scale=(0.005,0.02), ratio=(0.4,2.0), value='random'),
+        ]
+        return T.Compose(pil_augs + tens_augs)
+    else:
+        return T.Compose([
+            pad_to_square,
+            T.CenterCrop((image_size,image_size)),
+            T.ToTensor(),
+            T.Normalize([0.5],[0.5]),
+        ])
+
 
 class ADNIJPEGSlicesDataset(Dataset):
     """
@@ -90,20 +114,7 @@ class ADNIJPEGSlicesDataset(Dataset):
                     self.samples.append((p, label, sid))
 
         # Define transforms
-        base_tf = [
-            T.Resize((image_size, image_size)),
-            T.ToTensor(),                     # → [1, H, W]
-            T.Normalize(mean=[0.5], std=[0.5])
-        ]
-        if split == "train" and augment:
-            aug_tf = [
-                T.RandomHorizontalFlip(p=0.5),
-                T.RandomRotation(10),
-                T.RandomResizedCrop(image_size, scale=(0.9, 1.0))
-            ]
-            self.tf = T.Compose(aug_tf + base_tf)
-        else:
-            self.tf = T.Compose(base_tf)
+        self.tf = build_transforms(self.image_size, train=(split=="train" and augment))
 
     def __len__(self):
         return len(self.samples)

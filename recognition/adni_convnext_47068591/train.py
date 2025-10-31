@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from collections import defaultdict
 from contextlib import nullcontext
+from utils import RandomSubjectBatchSampler
 
 import argparse
 import torch
@@ -37,12 +38,12 @@ CONFIG = dict(
     LIMIT_SLICES_PER_SUBJECT=20, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.1,
-    HEAD_DROP=0.2,
+    DROP_PATH_RATE=0.25,
+    HEAD_DROP=0.4,
     WARMUP_EPOCHS=5,
     EARLY_STOP=True,      # turn off to disable
     ES_MONITOR="subject", # "subject" or "val" (slice-level acc)
-    ES_PATIENCE=8,        # epochs without improvement before stopping
+    ES_PATIENCE=10,        # epochs without improvement before stopping
     ES_MIN_DELTA=0.003,   # require +0.3% improvement to reset patience
 )
 # ============================================================================ #
@@ -198,8 +199,17 @@ def main():
         image_size=args.image_size, augment=False
     )
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                              num_workers=args.workers, pin_memory=True)
+    train_loader = DataLoader(
+        train_ds,
+        batch_sampler=RandomSubjectBatchSampler(
+            train_ds,
+            batch_size=args.batch,     # same as your BATCH in CONFIG
+            drop_last=True,            # usually True for stable batch norm
+            seed=args.seed
+        ),
+        num_workers=args.workers,
+        pin_memory=True,
+    )
     val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                               num_workers=args.workers, pin_memory=True)
 
@@ -237,6 +247,7 @@ def main():
     early_stop_enabled = bool(CONFIG.get("EARLY_STOP", True))
     min_delta = float(CONFIG.get("ES_MIN_DELTA", 0.0))
     patience  = int(CONFIG.get("ES_PATIENCE", 8))
+
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
