@@ -30,18 +30,18 @@ from modules import ConvNeXtTiny1C, bce_with_logits_loss, binary_metrics
 # ====================== USER CONFIG ============================= #
 CONFIG = dict(
     ROOT=r"C:\Users\harri\UQ\COMP3710\COMP3710_A3\PatternAnalysis-2025-47068591\data\ADNI\AD_NC",
-    EPOCHS=80,
-    BATCH=32,
-    LR=3e-4,
-    WEIGHT_DECAY=5e-3,
+    EPOCHS=100,
+    BATCH=16,
+    LR=5e-4,
+    WEIGHT_DECAY=2e-3,
     OUT="runs",
     WORKERS=4,
     IMAGE_SIZE=224,
     LIMIT_SLICES_PER_SUBJECT=12, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.2,
-    HEAD_DROP=0.3,
+    DROP_PATH_RATE=0.25,
+    HEAD_DROP=0.4,
     WARMUP_EPOCHS=0,
 )
 # ============================================================================ #
@@ -252,8 +252,8 @@ def main():
     model = ConvNeXtTiny1C(
         in_ch=1, num_classes=1,
         drop_path_rate=CONFIG["DROP_PATH_RATE"],
-        depths=(2, 2, 9, 2),
-        dims=(80, 160, 320, 640), 
+        depths=(3, 3, 9, 3),
+        dims=(96,192,384,768), 
         head_drop=CONFIG["HEAD_DROP"]
     ).to(device)
     warmup_epochs = CONFIG["WARMUP_EPOCHS"]
@@ -273,7 +273,7 @@ def main():
     if args.subject_eval:
         history["val_subj_acc"] = []
 
-    patience = 8
+    patience = 30
     bad = 0
     best_metric = -1.0
     best_path = outdir / "best_model.pt"
@@ -296,6 +296,8 @@ def main():
             line += f" | Val-Subject acc{subj_metric:.3f}"
         line += f" | {time.time()-t0:.1f}s"
         print(line)
+        curr_lr = optimizer.param_groups[0]['lr']
+        print(f"LR={curr_lr:.6g}")
 
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
         monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc

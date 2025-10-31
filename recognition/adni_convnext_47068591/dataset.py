@@ -94,19 +94,16 @@ class ADNIJPEGSlicesDataset(Dataset):
             pil_augs = [
                 pad_to_square,
                 T.RandomHorizontalFlip(p=0.5),
-                T.RandomRotation(5),                              
-                T.RandomAffine(degrees=0, translate=(0.03, 0.03), 
-                            scale=(0.97, 1.03)),
-                T.ColorJitter(brightness=0.05, contrast=0.05),
+                T.RandomRotation(3),                              
+                T.RandomAffine(degrees=0, translate=(0.02, 0.02), 
+                            scale=(0.98, 1.02)),
+ 
                 T.RandomCrop((image_size, image_size)),
             ]
             tensor_steps = [
                 T.ToTensor(),                     # -> [1,H,W]
                 T.Normalize(mean=[0.5], std=[0.5]),
-                T.RandomErasing(p=0.2,            # keep modest; can raise to 0.3 later
-                                scale=(0.01, 0.03),
-                                ratio=(0.3, 3.3),
-                                value='random'),
+                # T.RandomErasing(p=0.15, scale=(0.005, 0.02),ratio=(0.4, 2.0),value='random'),
             ]
             self.tf = T.Compose(pil_augs + tensor_steps)
         else:
