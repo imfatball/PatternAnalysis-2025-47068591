@@ -1,9 +1,9 @@
 """
-train.py (no-CLI needed)
+train.py
 ------------------------
 Set CONFIG below (especially ROOT) and run:
     python train.py
-You can still override with flags (e.g., --root PATH), but it's optional.
+override with flags (e.g., --root PATH)
 """
 
 import os
@@ -40,6 +40,10 @@ CONFIG = dict(
     DROP_PATH_RATE=0.1,
     HEAD_DROP=0.2,
     WARMUP_EPOCHS=5,
+    EARLY_STOP=True,      # turn off to disable
+    ES_MONITOR="subject", # "subject" or "val" (slice-level acc)
+    ES_PATIENCE=8,        # epochs without improvement before stopping
+    ES_MIN_DELTA=0.003,   # require +0.3% improvement to reset patience
 )
 # ============================================================================ #
 
@@ -53,7 +57,7 @@ def set_seed(seed: int = 42):
 def save_checkpoint(model: nn.Module, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), path)
-    print(f"✅ Saved checkpoint: {path}")
+    print(f"Saved checkpoint: {path}")
 
 def plot_history(history: dict, outdir: Path):
     outdir.mkdir(parents=True, exist_ok=True)
@@ -228,6 +232,12 @@ def main():
     best_metric = -1.0
     best_path = outdir / "best_model.pt"
 
+    bad_epochs = 0
+    monitor_subject = (CONFIG.get("ES_MONITOR", "subject").lower() == "subject")
+    early_stop_enabled = bool(CONFIG.get("EARLY_STOP", True))
+    min_delta = float(CONFIG.get("ES_MIN_DELTA", 0.0))
+    patience  = int(CONFIG.get("ES_PATIENCE", 8))
+
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
@@ -243,24 +253,32 @@ def main():
 
         line = f"Epoch {epoch:03d}/{args.epochs} | Train {tr_loss:.4f}/{tr_acc:.3f} | Val {val_loss:.4f}/{val_acc:.3f}"
         subj_metric = None
-        if args.subject_eval:
-            subj_metric = evaluate_subject_level(model, val_loader, device)
-            history["val_subj_acc"].append(subj_metric)
-            line += f" | Val-Subject {subj_metric:.3f}"
+        if args.subject_eval and monitor_subject:
+            monitor_value = evaluate_subject_level(model, val_loader, device)
+            history["val_subj_acc"].append(monitor_value)
+            line += f" | Val-Subject {monitor_value:.3f}"
+        else:
+            monitor_value = val_acc  # slice-level acc
+
         line += f" | {time.time()-t0:.1f}s"
         print(line)
 
-        monitor = subj_metric if (args.subject_eval and subj_metric is not None) else val_acc
-        if monitor > best_metric:
-            best_metric = monitor
+        if monitor_value > best_metric + min_delta:
+            best_metric = monitor_value
+            bad_epochs = 0
             save_checkpoint(model, best_path)
+        else:
+            bad_epochs += 1
+            if early_stop_enabled and bad_epochs >= patience:
+                print(f"Early stopping (no improvement ≥ {min_delta:.4f} for {patience} epochs).")
+                break
 
     # Save logs
     plot_history(history, outdir)
     with open(outdir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    print(f"🏁 Done. Best metric ({'subject' if args.subject_eval else 'slice'}): {best_metric:.3f}")
+    print(f"Done. Best metric ({'subject' if args.subject_eval else 'slice'}): {best_metric:.3f}")
     print(f"Best checkpoint: {best_path}")
 
 
