@@ -42,19 +42,16 @@ def _parse_subject_id(filename: str) -> str:
 def build_transforms(image_size=224, train=True):
     pad_to_square = T.Pad((8, 0, 8, 0), padding_mode="reflect")  # 256x240 -> 256x256
     if train:
-        pil_augs = [
+        return T.Compose([
             pad_to_square,
             T.RandomHorizontalFlip(0.5),
             T.RandomRotation(3),
             T.RandomAffine(degrees=0, translate=(0.02,0.02), scale=(0.98,1.02)),
             T.RandomCrop((image_size, image_size)),
-        ]
-        tens_augs = [
             T.ToTensor(),
             T.Normalize([0.5],[0.5]),
             T.RandomErasing(p=0.15, scale=(0.005,0.02), ratio=(0.4,2.0), value='random'),
-        ]
-        return T.Compose(pil_augs + tens_augs)
+        ])
     else:
         return T.Compose([
             pad_to_square,
