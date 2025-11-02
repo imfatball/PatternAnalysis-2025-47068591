@@ -13,13 +13,16 @@ from pathlib import Path
 from collections import defaultdict
 from contextlib import nullcontext
 
+
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import matplotlib.pyplot as plt
+import numpy as np
 
 from dataset import ADNIJPEGSlicesDataset
 from modules import ConvNeXtTiny1C, bce_with_logits_loss, binary_metrics
@@ -30,15 +33,15 @@ CONFIG = dict(
     EPOCHS=60,
     BATCH=16,
     LR=2e-4,
-    WEIGHT_DECAY=5e-2,
+    WEIGHT_DECAY=2e-3,
     OUT="runs",
     WORKERS=4,
     IMAGE_SIZE=224,
     LIMIT_SLICES_PER_SUBJECT=12, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.2,
-    HEAD_DROP=0.3,
+    DROP_PATH_RATE=0.15,
+    HEAD_DROP=0.25,
     WARMUP_EPOCHS=5,
 )
 # ============================================================================ #
@@ -76,6 +79,17 @@ def plot_history(history: dict, outdir: Path):
         plt.xlabel("Epoch"); plt.ylabel("Subject Acc"); plt.legend()
         plt.tight_layout(); plt.savefig(outdir / "subject_acc_curve.png", dpi=150); plt.close()
 
+def do_mixup(x, y, alpha=0.2):
+    if alpha <= 0: 
+        return x, y, 1.0
+    lam = np.random.beta(alpha, alpha)
+    bs = x.size(0)
+    idx = torch.randperm(bs, device=x.device)
+    x_mix = lam * x + (1 - lam) * x[idx]
+    y = y.float()
+    y_mix = lam * y + (1 - lam) * y[idx]  # soft targets in [0,1]
+    return x_mix, y_mix, lam
+
 
 def train_one_epoch(model, loader, optimizer, device, scaler=None):
     model.train()
@@ -86,20 +100,24 @@ def train_one_epoch(model, loader, optimizer, device, scaler=None):
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad(set_to_none=True)
 
+        # 🔸 Apply MixUp (only for training)
+        imgs, y_soft, lam = do_mixup(imgs, labels, alpha=0.2)
+
         if scaler is not None:
             with autocast_ctx:
                 logits = model(imgs)
-                loss = bce_with_logits_loss(logits, labels)
+                # use soft targets (MixUp already smooths)
+                loss = F.binary_cross_entropy_with_logits(logits.view(-1), y_soft.view(-1))
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
             with autocast_ctx:
                 logits = model(imgs)
-                loss = bce_with_logits_loss(logits, labels)
+                loss = F.binary_cross_entropy_with_logits(logits.view(-1), y_soft.view(-1))
             loss.backward()
             optimizer.step()
-
+            
         acc, _ = binary_metrics(logits.detach(), labels)
         bs = imgs.size(0)
         running_loss += loss.item() * bs
