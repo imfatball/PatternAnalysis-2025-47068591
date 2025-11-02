@@ -34,11 +34,11 @@ CONFIG = dict(
     OUT="runs",
     WORKERS=4,
     IMAGE_SIZE=224,
-    LIMIT_SLICES_PER_SUBJECT=20, 
+    LIMIT_SLICES_PER_SUBJECT=12, 
     SUBJECT_EVAL=True,
     SEED=42,
-    DROP_PATH_RATE=0.1,
-    HEAD_DROP=0.2,
+    DROP_PATH_RATE=0.2,
+    HEAD_DROP=0.3,
     WARMUP_EPOCHS=5,
 )
 # ============================================================================ #

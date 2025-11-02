@@ -29,6 +29,7 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as T
+from torchvision.transforms import InterpolationMode as IM
 
 
 def _parse_subject_id(filename: str) -> str:
@@ -89,21 +90,49 @@ class ADNIJPEGSlicesDataset(Dataset):
                 for p in plist:
                     self.samples.append((p, label, sid))
 
-        # Define transforms
-        base_tf = [
-            T.Resize((image_size, image_size)),
-            T.ToTensor(),                     # → [1, H, W]
-            T.Normalize(mean=[0.5], std=[0.5])
-        ]
         if split == "train" and augment:
-            aug_tf = [
+            self.tf = T.Compose([
+                # --- geometric (PIL space) ---
+                T.RandomResizedCrop(
+                    image_size,
+                    scale=(0.80, 1.00),        # harsher than 0.9–1.0
+                    ratio=(0.90, 1.10),
+                    interpolation=IM.BICUBIC
+                ),
                 T.RandomHorizontalFlip(p=0.5),
-                T.RandomRotation(10),
-                T.RandomResizedCrop(image_size, scale=(0.9, 1.0))
-            ]
-            self.tf = T.Compose(aug_tf + base_tf)
+                T.RandomApply([
+                    T.RandomAffine(
+                        degrees=8,             # was 10; paired with shear/translate
+                        translate=(0.05, 0.05),
+                        scale=(0.95, 1.05),
+                        shear=(-5, 5),
+                        interpolation=IM.BILINEAR
+                    )
+                ], p=0.7),
+                T.RandomPerspective(distortion_scale=0.20, p=0.3),
+
+                # --- intensity (PIL space; fine on grayscale) ---
+                T.ColorJitter(brightness=0.18, contrast=0.18),
+
+                # --- tensor space ---
+                T.ToTensor(),                      # → [1, H, W]
+                T.Normalize(mean=[0.5], std=[0.5]),
+                T.RandomApply([
+                    T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.2))
+                ], p=0.3),
+                T.RandomErasing(
+                    p=0.25,
+                    scale=(0.01, 0.05),
+                    ratio=(0.4, 2.5),
+                    value='random'
+                ),
+            ])
         else:
-            self.tf = T.Compose(base_tf)
+            self.tf = T.Compose([
+                T.Resize((image_size, image_size), interpolation=IM.BICUBIC),
+                T.ToTensor(),
+                T.Normalize(mean=[0.5], std=[0.5]),
+            ])
 
     def __len__(self):
         return len(self.samples)
