@@ -24,7 +24,6 @@ import torch
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score, confusion_matrix, roc_curve
-from PIL import Image, ImageOps, ImageDraw
 
 from dataset import ADNIJPEGSlicesDataset
 from modules import ConvNeXtTiny1C

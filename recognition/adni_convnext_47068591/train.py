@@ -1,4 +1,30 @@
-import os
+"""
+train.py
+---------
+Main training script for Alzheimer MRI slice classification (AD vs NC)
+using a ConvNeXt-Tiny backbone adapted for single-channel (grayscale) input.
+
+Key Features:
+- Loads grayscale JPEG slices via ADNIJPEGSlicesDataset.
+- Implements a ConvNeXt-Tiny-like CNN (ConvNeXtTiny1C) for binary classification.
+- Uses MixUp augmentation, gradient clipping, and AMP (mixed precision).
+- Optimized with AdamW, warmup + cosine learning rate scheduling.
+- Tracks both slice-level and subject-level accuracy during training.
+- Applies early stopping based on subject-level accuracy to prevent overfitting.
+- Saves training curves (loss, accuracy) and the best-performing checkpoint.
+
+Usage:
+    python train.py
+    (optional) Override root with: --root <path/to/ADNI/AD_NC>
+
+Outputs:
+    runs/
+      ├── best_model.pt
+      ├── loss_curve.png
+      ├── acc_curve.png
+      ├── subject_acc_curve.png
+      └── history.json
+"""
 import json
 import time
 from pathlib import Path

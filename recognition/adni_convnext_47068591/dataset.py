@@ -7,7 +7,7 @@ Loads grayscale JPEG slices for AD vs NC classification (ADNI dataset).
 
 import os
 import glob
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional
 from collections import defaultdict
 
 import torch
