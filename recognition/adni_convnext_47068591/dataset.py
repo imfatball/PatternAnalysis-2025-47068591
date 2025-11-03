@@ -3,21 +3,6 @@ dataset.py
 -----------
 Loads grayscale JPEG slices for AD vs NC classification (ADNI dataset).
 
-Expected directory structure:
-    ADNI/
-        AD_NC/
-            train/
-                AD/
-                    123456_78.jpeg
-                    123456_79.jpeg
-                    ...
-                NC/
-                    654321_81.jpeg
-                    654321_82.jpeg
-                    ...
-            test/
-                AD/
-                NC/
 """
 
 import os
@@ -90,19 +75,20 @@ class ADNIJPEGSlicesDataset(Dataset):
                 for p in plist:
                     self.samples.append((p, label, sid))
 
+        # data augmentations / transforms
         if split == "train" and augment:
             self.tf = T.Compose([
                 # --- geometric (PIL space) ---
                 T.RandomResizedCrop(
                     image_size,
-                    scale=(0.80, 1.00),        # harsher than 0.9–1.0
+                    scale=(0.80, 1.00),   
                     ratio=(0.90, 1.10),
                     interpolation=IM.BICUBIC
                 ),
                 T.RandomHorizontalFlip(p=0.5),
                 T.RandomApply([
                     T.RandomAffine(
-                        degrees=8,             # was 10; paired with shear/translate
+                        degrees=8,             
                         translate=(0.05, 0.05),
                         scale=(0.95, 1.05),
                         shear=(-5, 5),
@@ -110,8 +96,6 @@ class ADNIJPEGSlicesDataset(Dataset):
                     )
                 ], p=0.7),
                 T.RandomPerspective(distortion_scale=0.20, p=0.3),
-
-                # --- intensity (PIL space; fine on grayscale) ---
                 T.ColorJitter(brightness=0.18, contrast=0.18),
 
                 # --- tensor space ---

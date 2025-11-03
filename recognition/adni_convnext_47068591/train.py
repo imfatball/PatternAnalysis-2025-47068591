@@ -1,10 +1,3 @@
-"""
-train.py (improved, no subject sampler)
----------------------------------------
-Set CONFIG below (especially ROOT) and run:
-    python train.py
-"""
-
 import os
 import json
 import time
@@ -35,7 +28,7 @@ CONFIG = dict(
     OUT="runs",
     WORKERS=4,
     IMAGE_SIZE=224,
-    LIMIT_SLICES_PER_SUBJECT=12, 
+    LIMIT_SLICES_PER_SUBJECT=12,
     SUBJECT_EVAL=True,
     SEED=42,
 
@@ -47,15 +40,18 @@ CONFIG = dict(
 
     # Stability & Generalization
     CLIP_NORM=1.0,       # gradient clipping
-    MIXUP_ALPHA=0.2,     # set 0.0 to disable
-    EMA=False,           # enable for smoother eval
-    EMA_DECAY=0.999,
-    EVAL_TTA=False,      # test-time augmentation (flip)
+    MIXUP_ALPHA=0.2,     # MixUp
+
+    # Early stopping 
+    EARLY_STOP_PATIENCE=8,
 )
 # ============================================================================ #
 
 
 def set_seed(seed: int = 42):
+    """
+    Fix random seeds for Python, NumPy, and PyTorch (CPU/CUDA).
+    """
     import random, numpy as np
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -63,12 +59,19 @@ def set_seed(seed: int = 42):
 
 
 def save_checkpoint(model: nn.Module, path: Path):
+    """
+    Save only the model state_dict at 'path'. Creates parent dirs if needed.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), path)
-    print(f"✅ Saved checkpoint: {path}")
+    print(f"Saved checkpoint: {path}")
 
 
 def plot_history(history: dict, outdir: Path):
+    """
+    Write simple PNG plots for train/val loss and accuracy.
+    Also plots subject-level accuracy if present.
+    """
     outdir.mkdir(parents=True, exist_ok=True)
 
     plt.figure()
@@ -92,6 +95,10 @@ def plot_history(history: dict, outdir: Path):
 
 # ---------- MixUp ----------
 def do_mixup(x, y, alpha=0.2):
+    """
+    Standard MixUp: convex-combine inputs and labels within the batch.
+    Returns mixed images, mixed (soft) labels, and lambda.
+    """
     if alpha <= 0:
         return x, y, 1.0
     lam = np.random.beta(alpha, alpha)
@@ -103,35 +110,15 @@ def do_mixup(x, y, alpha=0.2):
     return x_mix, y_mix, lam
 
 
-# ---------- EMA ----------
-class EMA:
-    def __init__(self, model: nn.Module, decay: float = 0.999):
-        self.decay = float(decay)
-        self.shadow = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
-        self.collected = {}
-
-    @torch.no_grad()
-    def update(self, model: nn.Module):
-        for n, p in model.named_parameters():
-            if not p.requires_grad: continue
-            self.shadow[n].mul_(self.decay).add_(p.detach(), alpha=1.0 - self.decay)
-
-    def apply_to(self, model: nn.Module):
-        self.collected = {}
-        for n, p in model.named_parameters():
-            if not p.requires_grad: continue
-            self.collected[n] = p.detach().clone()
-            p.data.copy_(self.shadow[n].data)
-
-    def restore(self, model: nn.Module):
-        for n, p in model.named_parameters():
-            if not p.requires_grad: continue
-            p.data.copy_(self.collected[n].data)
-        self.collected = {}
-
-
 # ---------- Training ----------
-def train_one_epoch(model, loader, optimizer, device, scaler=None, mixup_alpha=0.2, clip_norm=1.0, ema: EMA=None):
+def train_one_epoch(model, loader, optimizer, device, scaler=None, mixup_alpha=0.2, clip_norm=1.0):
+    """
+    One full pass over the training set.
+      - Uses AMP if CUDA is available and scaler is provided.
+      - Applies MixUp to both inputs and labels.
+      - Clips gradients for stability.
+      - Tracks average loss and accuracy for reporting.
+    """
     model.train()
     running_loss, running_acc, n_samples = 0.0, 0.0, 0
     autocast_ctx = torch.amp.autocast('cuda') if device == "cuda" else nullcontext()
@@ -140,7 +127,7 @@ def train_one_epoch(model, loader, optimizer, device, scaler=None, mixup_alpha=0
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad(set_to_none=True)
 
-        # MixUp augmentation
+        # MixUp augmentation (soft labels)
         imgs, y_soft, _ = do_mixup(imgs, labels, alpha=mixup_alpha)
 
         if scaler is not None:
@@ -162,9 +149,7 @@ def train_one_epoch(model, loader, optimizer, device, scaler=None, mixup_alpha=0
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
             optimizer.step()
 
-        if ema is not None:
-            ema.update(model)
-
+        # Report hard accuracy against original hard labels (not soft)
         acc, _ = binary_metrics(logits.detach(), labels)
         bs = imgs.size(0)
         running_loss += loss.item() * bs
@@ -176,7 +161,11 @@ def train_one_epoch(model, loader, optimizer, device, scaler=None, mixup_alpha=0
 
 # ---------- Evaluation ----------
 @torch.inference_mode()
-def evaluate_slice_level(model, loader, device, tta=False):
+def evaluate_slice_level(model, loader, device):
+    """
+    Slice-level evaluation on the provided loader.
+    Returns average loss and accuracy across slices.
+    """
     model.eval()
     total_loss, total_acc, n_samples = 0.0, 0.0, 0
     autocast_ctx = torch.amp.autocast('cuda') if device == "cuda" else nullcontext()
@@ -185,8 +174,6 @@ def evaluate_slice_level(model, loader, device, tta=False):
         imgs, labels = imgs.to(device), labels.to(device)
         with autocast_ctx:
             logits = model(imgs)
-            if tta:
-                logits = 0.5 * (logits + model(torch.flip(imgs, dims=[-1])))
             loss = bce_with_logits_loss(logits, labels)
         acc, _ = binary_metrics(logits, labels)
 
@@ -199,7 +186,12 @@ def evaluate_slice_level(model, loader, device, tta=False):
 
 
 @torch.inference_mode()
-def evaluate_subject_level(model, loader, device, tta=False):
+def evaluate_subject_level(model, loader, device):
+    """
+    Subject-level evaluation:
+      - Aggregate all slice logits per subject (mean logit).
+      - Return subject-level accuracy.
+    """
     model.eval()
     bucket = defaultdict(list)
     autocast_ctx = torch.amp.autocast('cuda') if device == "cuda" else nullcontext()
@@ -208,8 +200,6 @@ def evaluate_subject_level(model, loader, device, tta=False):
         imgs, labels = imgs.to(device), labels.to(device)
         with autocast_ctx:
             logits = model(imgs)
-            if tta:
-                logits = 0.5 * (logits + model(torch.flip(imgs, dims=[-1])))
 
         for lg, lab, sid in zip(logits.detach().cpu(), labels.cpu(), sids):
             bucket[sid].append((float(lg), int(lab)))
@@ -227,6 +217,14 @@ def evaluate_subject_level(model, loader, device, tta=False):
 
 # ---------- Main ----------
 def main():
+    """
+    Orchestrates:
+      - seeding, device setup
+      - dataset/dataloader creation (train uses 'train/', val uses 'test/')
+      - model/optimizer/scheduler/scaler setup
+      - training loop with subject-level early stopping
+      - history plots + JSON dump
+    """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--root", type=str, default=CONFIG["ROOT"])
     args, _ = parser.parse_known_args()
@@ -238,7 +236,9 @@ def main():
     print(f"Device: {device}")
     print(f"Root:   {args.root}")
 
-    # Datasets
+    # --- Datasets & loaders ---
+    # Train: strong augmentation; 
+    # Val(Test): deterministic resize/normalize.
     train_ds = ADNIJPEGSlicesDataset(
         root=args.root, split="train",
         image_size=CONFIG["IMAGE_SIZE"], augment=True,
@@ -254,17 +254,18 @@ def main():
     val_loader   = DataLoader(val_ds, batch_size=CONFIG["BATCH"], shuffle=False,
                               num_workers=CONFIG["WORKERS"], pin_memory=True)
 
-    # Model
+    # --- Model ---
     model = ConvNeXtTiny1C(
         in_ch=1, num_classes=1,
         drop_path_rate=CONFIG["DROP_PATH_RATE"],
         head_drop=CONFIG["HEAD_DROP"]
     ).to(device)
 
-    # Optimizer (decoupled WD)
+    # --- Optimizer (AdamW with decoupled weight decay) ---
     decay, no_decay = [], []
     for n, p in model.named_parameters():
         if not p.requires_grad: continue
+        # Norms & biases go to no_decay
         if p.ndim == 1 or n.endswith(".bias") or ("norm" in n.lower()):
             no_decay.append(p)
         else:
@@ -275,50 +276,72 @@ def main():
         lr=CONFIG["LR"], betas=(0.9, 0.999)
     )
 
-    # Scheduler: warmup + cosine
+    # --- Scheduler: warmup (Linear) + cosine anneal ---
     warmup_epochs = CONFIG["WARMUP_EPOCHS"]
     main_epochs   = CONFIG["EPOCHS"] - warmup_epochs
     warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs)
     cosine = CosineAnnealingLR(optimizer, T_max=main_epochs, eta_min=CONFIG["ETA_MIN"])
     scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
 
+    # --- AMP scaler (CUDA) ---
     scaler = torch.amp.GradScaler('cuda') if device == "cuda" else None
-    ema = EMA(model, decay=CONFIG["EMA_DECAY"]) if CONFIG["EMA"] else None
 
+    # --- Training bookkeeping ---
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "val_subj_acc": []}
     best_metric, best_path = -1.0, outdir / "best_model.pt"
+
+    # --- Early stopping state ---
+    patience = int(CONFIG.get("EARLY_STOP_PATIENCE", 10))
+    no_improve = 0
 
     print("\n=== Training ===")
     for epoch in range(1, CONFIG["EPOCHS"] + 1):
         t0 = time.time()
 
+        # ---- Train ----
         tr_loss, tr_acc = train_one_epoch(
             model, train_loader, optimizer, device,
             scaler=scaler, mixup_alpha=CONFIG["MIXUP_ALPHA"],
-            clip_norm=CONFIG["CLIP_NORM"], ema=ema
+            clip_norm=CONFIG["CLIP_NORM"]
         )
 
-        if ema: ema.apply_to(model)
-        val_loss, val_acc = evaluate_slice_level(model, val_loader, device, tta=CONFIG["EVAL_TTA"])
-        subj_metric = evaluate_subject_level(model, val_loader, device, tta=CONFIG["EVAL_TTA"]) if CONFIG["SUBJECT_EVAL"] else val_acc
-        if ema: ema.restore(model)
+        # ---- Validate (slice + subject-level) ----
+        val_loss, val_acc = evaluate_slice_level(model, val_loader, device)
+        subj_metric = evaluate_subject_level(model, val_loader, device) if CONFIG["SUBJECT_EVAL"] else val_acc
 
+        # ---- Log / step LR ----
         history["train_loss"].append(tr_loss); history["val_loss"].append(val_loss)
         history["train_acc"].append(tr_acc);   history["val_acc"].append(val_acc)
         history["val_subj_acc"].append(subj_metric)
         scheduler.step()
 
-        line = f"Epoch {epoch:03d}/{CONFIG['EPOCHS']} | Train {tr_loss:.4f}/{tr_acc:.3f} | Val {val_loss:.4f}/{val_acc:.3f} | Subj {subj_metric:.3f} | LR={optimizer.param_groups[0]['lr']:.6g} | {time.time()-t0:.1f}s"
+        # ---- Progress line ----
+        line = (
+            f"Epoch {epoch:03d}/{CONFIG['EPOCHS']} | "
+            f"Train {tr_loss:.4f}/{tr_acc:.3f} | "
+            f"Val {val_loss:.4f}/{val_acc:.3f} | "
+            f"Subj {subj_metric:.3f} | "
+            f"LR={optimizer.param_groups[0]['lr']:.6g} | {time.time()-t0:.1f}s"
+        )
         print(line)
 
+        # ---- Save best & Early stop ----
         if subj_metric > best_metric:
             best_metric = subj_metric
             save_checkpoint(model, best_path)
+            no_improve = 0  # reset patience on improvement
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"Early stopping at epoch {epoch} (no improvement for {patience} epochs).")
+                break
 
+    # --- Plots & history dump ---
     plot_history(history, outdir)
     with open(outdir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
-    print(f"\n🏁 Done. Best subject acc: {best_metric:.3f}")
+
+    print(f"\nDone. Best subject acc: {best_metric:.3f}")
     print(f"Best checkpoint: {best_path}")
 
 
